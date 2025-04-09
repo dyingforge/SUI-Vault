@@ -1,4 +1,4 @@
-module vault::vault;
+module vault::vault_host;
 
 use std::string::String;
 use std::type_name::{Self, TypeName};
@@ -116,6 +116,7 @@ public struct Vault has key, store {
     emergency_active: bool,
     created_at: u64,
     temp_unlock_expiry: u64,
+    //dynamic field
 }
 
 // 保险箱集合 - 存储所有保险箱
