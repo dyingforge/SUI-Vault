@@ -25,7 +25,7 @@ const ENoAuthorizedSender: u64 = 11;
 // 保险箱状态
 const VAULT_LOCKED: u8 = 0;
 const VAULT_PENDING_VERIFICATION: u8 = 1;
-const VAULT_VERIFIED: u8 = 2;
+// const VAULT_VERIFIED: u8 = 2;
 const VAULT_EMERGENCY_PENDING: u8 = 3;
 // const VAULT_TEMP_UNLOCKED: u8 = 4;
 const TEMP_UNLOCK_TIMEOUT_MS: u64 = 604800000; // 5分钟
@@ -106,10 +106,12 @@ public struct Vault has key {
     verification_expire_epoch: u64,
     last_operation_epoch: u64,
     cooldown_period: u64,
+    recipient: address,
     name: String,
     emergency_unlock_time: u64,
     emergency_active: bool,
     created_at: u64,
+    send_amount: u64,
     temp_unlock_expiry: u64,
     //dynamic field
 }
@@ -185,7 +187,9 @@ public entry fun create_vault(
         verification_expire_epoch: 0,
         last_operation_epoch: tx_context::epoch(ctx),
         cooldown_period,
+        recipient: owner,
         name,
+        send_amount: 0,
         emergency_unlock_time: 0,
         emergency_active: false,
         created_at: current_time,
@@ -232,25 +236,15 @@ public entry fun create_vault(
 }
 
 // 验证并提取代币（原子操作）
-public entry fun verify_and_withdraw<T>(
-    vault: &mut Vault,
-    cap: &VerifierCap,
-    password: vector<u8>,
-    amount: u64,
-    recipient: address,
-    ctx: &mut TxContext,
-) {
+public entry fun verify_and_withdraw<T>(vault: &mut Vault, cap: &VerifierCap, ctx: &mut TxContext) {
     let sender = tx_context::sender(ctx);
-
-    // 1. 验证密码
-    assert!(password == vault.password_hash, EIncorrectPassword);
 
     // 2. 验证凭证
     assert!(cap.vault_id == object::uid_to_inner(&vault.id), ENotVerifier);
     assert!(cap.owner == vault.owner, ENotVerifier);
 
     // 3. 验证调用者权限（必须是验证者或所有者）
-    assert!(sender == vault.verifier_address || sender == vault.owner, ENoAuthorizedSender);
+    assert!(sender == vault.verifier_address, ENoAuthorizedSender);
 
     // 4. 检查验证状态
     assert!(vault.status == VAULT_PENDING_VERIFICATION, EVerificationNotActive);
@@ -265,9 +259,9 @@ public entry fun verify_and_withdraw<T>(
 
     let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
     let available = balance::value(balance);
-    assert!(amount <= available, EInsufficientFunds);
+    assert!(vault.send_amount <= available, EInsufficientFunds);
 
-    let withdrawn_balance = balance::split(balance, amount);
+    let withdrawn_balance = balance::split(balance, vault.send_amount);
     let withdrawn_coin = coin::from_balance(withdrawn_balance, ctx);
     let remaining = balance::value(balance);
 
@@ -280,12 +274,12 @@ public entry fun verify_and_withdraw<T>(
         vault_id: object::uid_to_inner(&vault.id),
         owner: vault.owner,
         coin_type: type_name,
-        amount,
+        amount: vault.send_amount,
         remaining,
     });
 
     // 10. 转移代币
-    transfer::public_transfer(withdrawn_coin, recipient);
+    transfer::public_transfer(withdrawn_coin, vault.recipient);
 }
 
 // 向保险箱存入代币
@@ -321,6 +315,8 @@ public entry fun deposit_coin<T>(vault: &mut Vault, coin: Coin<T>, ctx: &mut TxC
 public entry fun request_verification(
     vault: &mut Vault,
     password: vector<u8>,
+    amount: u64,
+    recipient: address,
     verification_window: u64,
     ctx: &mut TxContext,
 ) {
@@ -335,10 +331,14 @@ public entry fun request_verification(
     let current_epoch = tx_context::epoch(ctx);
     assert!(current_epoch >= vault.last_operation_epoch + vault.cooldown_period, ECooldownNotMet);
 
+    assert!(vault.status == VAULT_LOCKED, EVerificationNotActive);
+
     // 设置验证状态
     vault.status = VAULT_PENDING_VERIFICATION;
     vault.verification_expire_epoch = current_epoch + verification_window;
     vault.last_operation_epoch = current_epoch;
+    vault.recipient = recipient;
+    vault.send_amount = amount;
 
     // 发出验证请求事件
     event::emit(VerificationRequested {
@@ -348,213 +348,6 @@ public entry fun request_verification(
         expire_epoch: vault.verification_expire_epoch,
     });
 }
-
-// 验证者验证保险箱
-public entry fun verify_vault(vault: &mut Vault, cap: &VerifierCap, ctx: &mut TxContext) {
-    let sender = tx_context::sender(ctx);
-
-    // 验证身份和凭证
-    assert!(sender == vault.verifier_address, ENotVerifier);
-    assert!(cap.vault_id == object::uid_to_inner(&vault.id), ENotVerifier);
-    assert!(cap.owner == vault.owner, ENotVerifier);
-
-    // 检查状态
-    assert!(vault.status == VAULT_PENDING_VERIFICATION, EVerificationNotActive);
-
-    // 检查是否已过期
-    let current_epoch = tx_context::epoch(ctx);
-    assert!(current_epoch <= vault.verification_expire_epoch, EVerificationExpired);
-
-    // 更新状态
-    vault.status = VAULT_VERIFIED;
-}
-
-// 解锁并提取代币
-public entry fun withdraw_coin<T>(
-    vault: &mut Vault,
-    amount: u64,
-    recipient: address,
-    ctx: &mut TxContext,
-) {
-    let sender = tx_context::sender(ctx);
-
-    // 验证所有权
-    assert!(sender == vault.owner, ENotOwner);
-
-    // 验证状态
-    assert!(vault.status == VAULT_VERIFIED, EVerificationNotActive);
-
-    // 获取代币类型
-    let type_name = type_name::get<T>();
-
-    // 确保存在该类型的代币
-    assert!(dynamic_field::exists_(&vault.id, type_name), ENotFound);
-
-    // 获取余额
-    let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
-
-    // 确保余额足够
-    let available = balance::value(balance);
-    assert!(amount <= available, EInsufficientFunds);
-
-    // 提取代币
-    let withdrawn_balance = balance::split(balance, amount);
-    let withdrawn_coin = coin::from_balance(withdrawn_balance, ctx);
-
-    // 计算剩余余额
-    let remaining = balance::value(balance);
-
-    // 重置状态
-    vault.status = VAULT_LOCKED;
-    vault.last_operation_epoch = tx_context::epoch(ctx);
-
-    // 发出提款事件
-    event::emit(CoinWithdrawn {
-        vault_id: object::uid_to_inner(&vault.id),
-        owner: sender,
-        coin_type: type_name,
-        amount,
-        remaining,
-    });
-
-    // 将代币转给接收者
-    transfer::public_transfer(withdrawn_coin, recipient);
-}
-
-// 临时解锁以进行PTB操作
-// public entry fun temp_unlock_for_ptb(
-//     vault: &mut Vault,
-//     password: vector<u8>,
-//     clock: &Clock,
-//     ctx: &mut TxContext,
-// ) {
-//     let sender = tx_context::sender(ctx);
-
-//     // 验证所有权
-//     assert!(sender == vault.owner, ENotOwner);
-
-//     // 验证状态
-//     assert!(vault.status == VAULT_VERIFIED, EVerificationNotActive);
-
-//     // 验证密码 todo
-//     let input_hash = password;
-//     assert!(input_hash == vault.password_hash, EIncorrectPassword);
-
-//     // 设置临时解锁状态和过期时间
-//     let current_time = clock::timestamp_ms(clock);
-//     vault.status = VAULT_TEMP_UNLOCKED;
-//     vault.temp_unlock_expiry = current_time + TEMP_UNLOCK_TIMEOUT_MS;
-
-//     // 发出临时解锁事件
-//     event::emit(VaultTempUnlocked {
-//         vault_id: object::uid_to_inner(&vault.id),
-//         owner: sender,
-//         expiry_time: vault.temp_unlock_expiry,
-//     });
-// }
-
-// // 获取代币用于PTB操作
-// public fun borrow_coin_for_ptb<T>(
-//     vault: &mut Vault,
-//     amount: u64,
-//     clock: &Clock,
-//     ctx: &mut TxContext,
-// ): Coin<T> {
-//     let sender = tx_context::sender(ctx);
-
-//     // 验证所有权
-//     assert!(sender == vault.owner, ENotOwner);
-
-//     // 验证临时解锁状态
-//     assert!(vault.status == VAULT_TEMP_UNLOCKED, EVerificationNotActive);
-
-//     // 检查临时解锁是否过期
-//     let current_time = clock::timestamp_ms(clock);
-//     assert!(current_time <= vault.temp_unlock_expiry, EVerificationExpired);
-
-//     // 获取代币类型
-//     let type_name = type_name::get<T>();
-
-//     // 确保存在该类型的代币
-//     assert!(dynamic_field::exists_(&vault.id, type_name), ENotFound);
-
-//     // 获取余额
-//     let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
-
-//     // 确保余额足够
-//     let available = balance::value(balance);
-//     assert!(amount <= available, EInsufficientFunds);
-
-//     // 提取代币
-//     let withdrawn_balance = balance::split(balance, amount);
-//     coin::from_balance(withdrawn_balance, ctx)
-// }
-
-// // 在PTB中存入代币
-// public fun deposit_coin_to_ptb<T>(
-//     vault: &mut Vault,
-//     coin: Coin<T>,
-//     clock: &Clock,
-//     ctx: &mut TxContext,
-// ) {
-//     let sender = tx_context::sender(ctx);
-
-//     // 验证所有权
-//     assert!(sender == vault.owner, ENotOwner);
-
-//     // 验证临时解锁状态
-//     assert!(vault.status == VAULT_TEMP_UNLOCKED, EVerificationNotActive);
-
-//     // 检查临时解锁是否过期
-//     let current_time = clock::timestamp_ms(clock);
-//     assert!(current_time <= vault.temp_unlock_expiry, EVerificationExpired);
-
-//     // 获取代币类型
-//     let type_name = type_name::get<T>();
-//     let amount = coin::value(&coin);
-//     let total;
-
-//     // 检查是否已存在该类型的代币余额
-//     if (dynamic_field::exists_(&vault.id, type_name)) {
-//         let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
-//         balance::join(balance, coin::into_balance(coin));
-//         total = balance::value(balance);
-//     } else {
-//         dynamic_field::add(&mut vault.id, type_name, coin::into_balance(coin));
-//         total = amount;
-//     };
-
-//     // 发出存款事件
-//     event::emit(CoinDeposited {
-//         vault_id: object::uid_to_inner(&vault.id),
-//         owner: sender,
-//         coin_type: type_name,
-//         amount,
-//         new_balance: total,
-//     });
-// }
-
-// 锁回保险箱
-// public entry fun relock_after_ptb(vault: &mut Vault, clock: &Clock, ctx: &mut TxContext) {
-//     let sender = tx_context::sender(ctx);
-
-//     // 验证所有权
-//     assert!(sender == vault.owner, ENotOwner);
-
-//     // 验证临时解锁状态
-//     assert!(vault.status == VAULT_TEMP_UNLOCKED, EVerificationNotActive);
-
-//     // 锁回
-//     vault.status = VAULT_LOCKED;
-//     vault.last_operation_epoch = tx_context::epoch(ctx);
-
-//     // 发出锁回事件
-//     event::emit(VaultRelocked {
-//         vault_id: object::uid_to_inner(&vault.id),
-//         owner: sender,
-//         timestamp: clock::timestamp_ms(clock),
-//     });
-// }
 
 // 发起紧急解锁
 public entry fun initiate_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx: &mut TxContext) {
@@ -582,28 +375,6 @@ public entry fun initiate_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx
 
 // 取消紧急解锁
 public entry fun cancel_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx: &mut TxContext) {
-    let sender = tx_context::sender(ctx);
-
-    // 验证所有权
-    assert!(sender == vault.owner, ENotOwner);
-
-    // 检查是否处于紧急状态
-    assert!(vault.emergency_active, EVerificationNotActive);
-
-    // 取消紧急解锁
-    vault.emergency_active = false;
-    vault.emergency_unlock_time = 0;
-    vault.status = VAULT_LOCKED;
-
-    // 发出取消事件
-    event::emit(EmergencyUnlockCancelled {
-        vault_id: object::uid_to_inner(&vault.id),
-        owner: sender,
-        timestamp: clock::timestamp_ms(clock),
-    });
-}
-
-public entry fun remove_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx: &mut TxContext) {
     let sender = tx_context::sender(ctx);
 
     // 验证所有权
@@ -687,73 +458,6 @@ public entry fun execute_emergency_unlock<T>(
     // 将代币转给接收者
     transfer::public_transfer(withdrawn_coin, recipient);
 }
-
-// 更换验证者 todo
-// public fun change_verifier(
-//     vault: &mut Vault,
-//     pool: &mut VaultPool,
-//     password: vector<u8>,
-//     new_verifier: address,
-//     old_cap: VerifierCap,
-//     ctx: &mut TxContext,
-// ) {
-//     let sender = tx_context::sender(ctx);
-
-//     // 验证所有权
-//     assert!(sender == vault.owner, ENotOwner);
-
-//     // 验证密码 todo
-//     let input_hash = password;
-//     assert!(input_hash == vault.password_hash, EIncorrectPassword);
-
-//     // 验证旧凭证
-//     assert!(old_cap.vault_id == object::uid_to_inner(&vault.id), ENotVerifier);
-//     assert!(old_cap.owner == vault.owner, ENotVerifier);
-//     assert!(old_cap.verifier == vault.verifier_address, ENotVerifier);
-
-//     // 从旧验证者列表中移除
-//     let vault_id_address = object::uid_to_address(&vault.id);
-
-//     if (table::contains(&pool.verifier_vaults, vault.verifier_address)) {
-//         let verifier_vaults = table::borrow_mut(&mut pool.verifier_vaults, vault.verifier_address);
-//         let (found, index) = vector::index_of(verifier_vaults, &vault_id_address);
-//         if (found) {
-//             vector::remove(verifier_vaults, index);
-//         };
-//     };
-
-//     // 更新验证者地址
-//     let old_verifier = vault.verifier_address;
-//     vault.verifier_address = new_verifier;
-
-//     // 添加到新验证者列表
-//     if (!table::contains(&pool.verifier_vaults, new_verifier)) {
-//         table::add(&mut pool.verifier_vaults, new_verifier, vector::empty<address>());
-//     };
-//     let verifier_vaults = table::borrow_mut(&mut pool.verifier_vaults, new_verifier);
-//     vector::push_back(verifier_vaults, vault_id_address);
-
-//     // 创建新验证者凭证
-//     let new_cap = VerifierCap {
-//         id: object::new(ctx),
-//         vault_id: object::uid_to_inner(&vault.id),
-//         owner: vault.owner,
-//         verifier: new_verifier,
-//     };
-
-//     // 发出验证者变更事件
-//     event::emit(VerifierChanged {
-//         vault_id: object::uid_to_inner(&vault.id),
-//         owner: vault.owner,
-//         old_verifier,
-//         new_verifier,
-//     });
-
-//     // 销毁旧凭证，转移新凭证
-//     let VerifierCap { id, vault_id: _, owner: _, verifier: _ } = old_cap;
-//     object::delete(id);
-//     transfer::transfer(new_cap, new_verifier);
-// }
 
 // 获取保险箱信息
 public fun get_vault_info<T>(vault: &Vault): (address, address, String, u64, u8, u64, bool) {
