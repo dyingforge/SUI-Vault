@@ -12,12 +12,11 @@ use sui::table::{Self, Table};
 // 错误码
 const ENotOwner: u64 = 1;
 const ENotVerifier: u64 = 2;
-// const ENotAdmin: u64 = 3;
+// const EVerificationNotExpired: u64 = 3;
 const EIncorrectPassword: u64 = 4;
 const ENotFound: u64 = 5;
 const EVerificationNotActive: u64 = 6;
 const EVerificationExpired: u64 = 7;
-const ECooldownNotMet: u64 = 8;
 const EAlreadyInitiated: u64 = 9;
 const EInsufficientFunds: u64 = 10;
 const ENoAuthorizedSender: u64 = 11;
@@ -28,7 +27,7 @@ const VAULT_PENDING_VERIFICATION: u8 = 1;
 // const VAULT_VERIFIED: u8 = 2;
 const VAULT_EMERGENCY_PENDING: u8 = 3;
 // const VAULT_TEMP_UNLOCKED: u8 = 4;
-const TEMP_UNLOCK_TIMEOUT_MS: u64 = 604800000; // 5分钟
+const TEMP_UNLOCK_TIMEOUT_MS: u64 = 604800000; // 一周
 
 // 事件
 public struct VaultCreated has copy, drop {
@@ -85,6 +84,13 @@ public struct EmergencyUnlockCancelled has copy, drop {
     timestamp: u64,
 }
 
+public struct VerificationCancelled has copy, drop {
+    vault_id: ID,
+    owner: address,
+    verifier: address,
+    timestamp: u64,
+}
+
 // public struct VerifierChanged has copy, drop {
 //     vault_id: ID,
 //     owner: address,
@@ -99,18 +105,17 @@ public struct AdminCap has key, store {
 
 public struct Vault has key {
     id: UID,
+    name: String,
     password_hash: vector<u8>,
     owner: address,
     verifier_address: address,
+    // last_verification_epoch: u64,
     status: u8,
     verification_expire_epoch: u64,
     last_operation_epoch: u64,
-    cooldown_period: u64,
     recipient: address,
-    name: String,
     emergency_unlock_time: u64,
     emergency_active: bool,
-    created_at: u64,
     send_amount: u64,
     temp_unlock_expiry: u64,
     //dynamic field
@@ -164,14 +169,11 @@ public entry fun create_vault(
     password: vector<u8>,
     verifier_address: address,
     name: String,
-    cooldown_period: u64,
-    clock: &Clock,
     ctx: &mut TxContext,
 ) {
     let owner = tx_context::sender(ctx);
     //todo
     let password_hash = password;
-    let current_time = clock::timestamp_ms(clock);
 
     // 创建新保险箱
     let vault_uid = object::new(ctx);
@@ -186,13 +188,12 @@ public entry fun create_vault(
         status: VAULT_LOCKED,
         verification_expire_epoch: 0,
         last_operation_epoch: tx_context::epoch(ctx),
-        cooldown_period,
+        // last_verification_epoch: 0,
         recipient: owner,
         name,
         send_amount: 0,
         emergency_unlock_time: 0,
         emergency_active: false,
-        created_at: current_time,
         temp_unlock_expiry: 0,
     };
 
@@ -243,8 +244,8 @@ public entry fun verify_and_withdraw<T>(vault: &mut Vault, cap: &VerifierCap, ct
     assert!(cap.vault_id == object::uid_to_inner(&vault.id), ENotVerifier);
     assert!(cap.owner == vault.owner, ENotVerifier);
 
-    // 3. 验证调用者权限（必须是验证者或所有者）
-    assert!(sender == vault.verifier_address, ENoAuthorizedSender);
+    // 3. 验证调用者权限（必须是验证者）
+    assert!(sender == vault.verifier_address && sender == cap.verifier, ENoAuthorizedSender);
 
     // 4. 检查验证状态
     assert!(vault.status == VAULT_PENDING_VERIFICATION, EVerificationNotActive);
@@ -253,9 +254,12 @@ public entry fun verify_and_withdraw<T>(vault: &mut Vault, cap: &VerifierCap, ct
     let current_epoch = tx_context::epoch(ctx);
     assert!(current_epoch <= vault.verification_expire_epoch, EVerificationExpired);
 
+    // assert!(current_epoch > cap.last_verification_epoch, EVerificationNotExpired);
+
     // 7. 执行提取逻辑
     let type_name = type_name::get<T>();
     assert!(dynamic_field::exists_(&vault.id, type_name), ENotFound);
+    vault.last_operation_epoch = current_epoch;
 
     let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
     let available = balance::value(balance);
@@ -329,13 +333,12 @@ public entry fun request_verification(
 
     // 检查冷却期
     let current_epoch = tx_context::epoch(ctx);
-    assert!(current_epoch >= vault.last_operation_epoch + vault.cooldown_period, ECooldownNotMet);
+    vault.verification_expire_epoch = current_epoch + verification_window;
 
     assert!(vault.status == VAULT_LOCKED, EVerificationNotActive);
 
     // 设置验证状态
     vault.status = VAULT_PENDING_VERIFICATION;
-    vault.verification_expire_epoch = current_epoch + verification_window;
     vault.last_operation_epoch = current_epoch;
     vault.recipient = recipient;
     vault.send_amount = amount;
@@ -349,6 +352,27 @@ public entry fun request_verification(
     });
 }
 
+public entry fun relock(vault: &mut Vault, ctx: &mut TxContext) {
+    let sender = tx_context::sender(ctx);
+
+    // 验证所有权
+    assert!(sender == vault.owner || sender == vault.verifier_address, ENotOwner);
+
+    // 检查是否已过期
+    let current_epoch = tx_context::epoch(ctx);
+
+    // 重置状态
+    vault.status = VAULT_LOCKED;
+    vault.last_operation_epoch = current_epoch;
+
+    event::emit(VerificationCancelled {
+        vault_id: object::uid_to_inner(&vault.id),
+        owner: vault.owner,
+        verifier: vault.verifier_address,
+        timestamp: current_epoch,
+    });
+}
+
 // 发起紧急解锁
 public entry fun initiate_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx: &mut TxContext) {
     let sender = tx_context::sender(ctx);
@@ -358,6 +382,8 @@ public entry fun initiate_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx
 
     // 检查是否已经发起
     assert!(!vault.emergency_active, EAlreadyInitiated);
+
+    assert!(vault.status == VAULT_LOCKED, EVerificationNotActive);
 
     // 设置紧急解锁状态
     vault.emergency_active = true;
@@ -399,7 +425,6 @@ public entry fun cancel_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx: 
 // 执行紧急解锁
 public entry fun execute_emergency_unlock<T>(
     vault: &mut Vault,
-    password: vector<u8>,
     amount: u64,
     clock: &Clock,
     recipient: address,
@@ -418,8 +443,6 @@ public entry fun execute_emergency_unlock<T>(
     assert!(current_time >= vault.emergency_unlock_time, EVerificationExpired);
 
     // 验证密码 todo
-    let input_hash = password;
-    assert!(input_hash == vault.password_hash, EIncorrectPassword);
 
     // 获取代币类型
     let type_name = type_name::get<T>();
@@ -460,7 +483,7 @@ public entry fun execute_emergency_unlock<T>(
 }
 
 // 获取保险箱信息
-public fun get_vault_info<T>(vault: &Vault): (address, address, String, u64, u8, u64, bool) {
+public fun get_vault_info<T>(vault: &Vault): (address, address, String, u64, u8, bool) {
     let type_name = type_name::get<T>();
     let balance = if (dynamic_field::exists_(&vault.id, type_name)) {
         balance::value(dynamic_field::borrow<TypeName, Balance<T>>(&vault.id, type_name))
@@ -468,15 +491,7 @@ public fun get_vault_info<T>(vault: &Vault): (address, address, String, u64, u8,
         0
     };
 
-    (
-        vault.owner,
-        vault.verifier_address,
-        vault.name,
-        balance,
-        vault.status,
-        vault.created_at,
-        vault.emergency_active,
-    )
+    (vault.owner, vault.verifier_address, vault.name, balance, vault.status, vault.emergency_active)
 }
 
 // 获取用户的所有保险箱
