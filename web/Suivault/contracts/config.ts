@@ -6,8 +6,8 @@ type NetworkType = 'testnet' | 'mainnet';
 
 const configs = {
     testnet: {
-        Package: "0x5b20020099486b34856fd4b17458aa37ee43ea7d6ad385114cebe91c482250d7",
-        VaultPool:"0x2cae1098eabd44703fa37eff24b25f9d380ec3bc9fc8f93d1d947fc786873e18"
+        Package: "0x3c24a59437218644378c91b3e5415be1c7e0a4a7a647b77ac0a829d16dd053d6",
+        VaultPool:"0x0c9a6be8349c2287e89035612edbcc8ee049faa3f274e77bc2e63fcc5bdb989f"
     },
     mainnet: {
         Package: "0x1111111111111111111111111111111111111111",
