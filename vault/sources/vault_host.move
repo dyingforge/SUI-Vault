@@ -106,10 +106,10 @@ public struct AdminCap has key, store {
 public struct Vault has key {
     id: UID,
     name: String,
-    password_hash: vector<u8>,
     owner: address,
     verifier_address: address,
     // last_verification_epoch: u64,
+    created_at: u64,
     status: u8,
     verification_expire_epoch: u64,
     last_operation_epoch: u64,
@@ -166,14 +166,12 @@ fun init(ctx: &mut TxContext) {
 // 创建保险箱
 public entry fun create_vault(
     pool: &mut VaultPool,
-    password: vector<u8>,
     verifier_address: address,
+    clock: &Clock,
     name: String,
     ctx: &mut TxContext,
 ) {
     let owner = tx_context::sender(ctx);
-    //todo
-    let password_hash = password;
 
     // 创建新保险箱
     let vault_uid = object::new(ctx);
@@ -182,11 +180,11 @@ public entry fun create_vault(
 
     let vault = Vault {
         id: vault_uid,
-        password_hash,
         owner,
         verifier_address,
         status: VAULT_LOCKED,
         verification_expire_epoch: 0,
+        created_at: clock::timestamp_ms(clock), // 添加创建时间
         last_operation_epoch: tx_context::epoch(ctx),
         // last_verification_epoch: 0,
         recipient: owner,
@@ -315,10 +313,9 @@ public entry fun deposit_coin<T>(vault: &mut Vault, coin: Coin<T>, ctx: &mut TxC
     });
 }
 
-// 输入密码，请求验证
-public entry fun request_verification(
+//请求验证
+public entry fun request_verification<T>(
     vault: &mut Vault,
-    password: vector<u8>,
     amount: u64,
     recipient: address,
     verification_window: u64,
@@ -329,9 +326,12 @@ public entry fun request_verification(
     // 验证所有权
     assert!(sender == vault.owner, ENotOwner);
 
-    assert!(password == vault.password_hash, EIncorrectPassword);
+    let type_name = type_name::get<T>();
+    assert!(dynamic_field::exists_(&vault.id, type_name), ENotFound);
+    let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
+    let available = balance::value(balance);
+    assert!(amount <= available, EInsufficientFunds);
 
-    // 检查冷却期
     let current_epoch = tx_context::epoch(ctx);
     vault.verification_expire_epoch = current_epoch + verification_window;
 
@@ -425,7 +425,6 @@ public entry fun cancel_emergency_unlock(vault: &mut Vault, clock: &Clock, ctx: 
 // 执行紧急解锁
 public entry fun execute_emergency_unlock<T>(
     vault: &mut Vault,
-    amount: u64,
     clock: &Clock,
     recipient: address,
     ctx: &mut TxContext,
@@ -455,10 +454,9 @@ public entry fun execute_emergency_unlock<T>(
 
     // 确保余额足够
     let available = balance::value(balance);
-    assert!(amount <= available, EInsufficientFunds);
 
     // 提取代币
-    let withdrawn_balance = balance::split(balance, amount);
+    let withdrawn_balance = balance::split(balance, available);
     let withdrawn_coin = coin::from_balance(withdrawn_balance, ctx);
 
     // 计算剩余余额
@@ -474,7 +472,7 @@ public entry fun execute_emergency_unlock<T>(
         vault_id: object::uid_to_inner(&vault.id),
         owner: sender,
         coin_type: type_name,
-        amount,
+        amount: available,
         remaining,
     });
 
@@ -520,4 +518,9 @@ public fun get_coin_balance<T>(vault: &Vault): u64 {
     } else {
         0
     }
+}
+
+#[test_only]
+public fun test_init(ctx: &mut TxContext) {
+    init(ctx)
 }
