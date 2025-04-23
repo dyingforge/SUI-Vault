@@ -1,5 +1,5 @@
 import { createBetterTxFactory, networkConfig } from "./index";
-
+import {isValidSuiAddress} from "@mysten/sui/utils";
 
 // public entry fun create_vault(
 //     pool: &mut VaultPool,
@@ -73,13 +73,13 @@ import { createBetterTxFactory, networkConfig } from "./index";
 
 export const createVaultTx = createBetterTxFactory<{ verifier_address:string, name:string}>((tx, networkVariables, params) => {
     tx.moveCall({
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "create_vault",
         arguments: [
-            tx.object(networkVariables.pool),
+            tx.object(networkVariables.VaultPool),
             tx.pure.address(params.verifier_address),
-            tx.object(networkVariables.clock),
+            tx.object("0x6"),
             tx.pure.string(params.name),
         ],
     });
@@ -134,16 +134,17 @@ export const createVaultTx = createBetterTxFactory<{ verifier_address:string, na
 //   // 10. 转移代币
 //   transfer::public_transfer(withdrawn_coin, vault.recipient);
 // }
-
-export const verifyAndWithdrawTx = createBetterTxFactory<{coin:string}>((tx, networkVariables, params) => {
+//   // 11. 发出验证事件
+export const verifyAndWithdrawTx = createBetterTxFactory<{vault:string,cap:string,coin_type:string}>((tx, networkVariables, params) => {
     tx.moveCall({
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "verify_and_withdraw",
         arguments: [
-            tx.object(networkVariables.vault),
-            tx.object(networkVariables.verifier_cap),
+            tx.object(params.vault),
+            tx.object(params.cap),
         ],
+        typeArguments: [params.coin_type]
     });
     return tx;
 });
@@ -177,16 +178,41 @@ export const verifyAndWithdrawTx = createBetterTxFactory<{coin:string}>((tx, net
 //   });
 // }
 
-export const depositCoinTx = createBetterTxFactory<{vault:string,coin:string}>((tx, networkVariables, params) => {
-    tx.moveCall({
-        package: networkVariables.package,
-        module: "vault_host",
-        function: "deposit_coin",
-        arguments: [
-            tx.object(params.vault),
-            tx.object(params.coin),
-        ],
-    });
+export const depositCoinTx = createBetterTxFactory<{vault:string,coin:string,amount:number,coin_type: string}>((tx, networkVariables, params) => {
+    if (!isValidSuiAddress(params.vault) ){
+        throw new Error("Invalid Sui address");
+    }
+    console.log("vault", params.coin)
+    if (!isValidSuiAddress(params.coin)) {
+        throw new Error("Invalid Sui 1address");
+    }
+
+        if(params.coin_type === "0x2::sui::SUI"){
+        const [depositCoin] =  tx.splitCoins(tx.gas, [tx.pure.u64(params.amount)]);
+        tx.moveCall({
+            package: networkVariables.Package,
+            module: "vault_host",
+            function: "deposit_coin",
+            arguments: [
+                tx.object(params.vault),
+                tx.object(depositCoin),
+            ],
+            typeArguments: [params.coin_type]
+        });
+        }else{
+        const [depositCoin] = tx.splitCoins(tx.object(params.coin), [tx.pure.u64(params.amount)]);
+        tx.moveCall({
+            package: networkVariables.Package,
+            module: "vault_host",
+            function: "deposit_coin",
+            arguments: [
+                tx.object(params.vault),
+                tx.object(depositCoin),
+            ],
+            typeArguments: [params.coin_type]
+        });
+        }
+
     return tx;
 });
 
@@ -228,9 +254,9 @@ export const depositCoinTx = createBetterTxFactory<{vault:string,coin:string}>((
 //     });
 // }
 
-export const requestVerificationTx = createBetterTxFactory<{vault:string,amount:number,coin:string,recipient:string,verification_window:number}>((tx, networkVariables, params) => {
+export const requestVerificationTx = createBetterTxFactory<{vault:string,amount:number,recipient:string,verification_window:number,coin_type: string}>((tx, networkVariables, params) => {
     tx.moveCall({
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "request_verification",
         arguments: [
@@ -239,6 +265,7 @@ export const requestVerificationTx = createBetterTxFactory<{vault:string,amount:
             tx.pure.address(params.recipient),
             tx.pure.u64(params.verification_window),
         ],
+        typeArguments:[params.coin_type]
     });
     return tx;
 }
@@ -271,14 +298,14 @@ export const requestVerificationTx = createBetterTxFactory<{vault:string,amount:
 //     });
 // }
 
-export const initiateEmergencyUnlockTx = createBetterTxFactory<{}>((tx, networkVariables, params) => {
+export const initiateEmergencyUnlockTx = createBetterTxFactory<{vault:string}>((tx, networkVariables, params) => {
     tx.moveCall({ 
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "initiate_emergency_unlock",
         arguments: [
-            tx.object(networkVariables.vault),
-            tx.object(networkVariables.clock),
+            tx.object(params.vault),
+            tx.object("0x8"),
         ],
     });
     return tx;
@@ -308,14 +335,14 @@ export const initiateEmergencyUnlockTx = createBetterTxFactory<{}>((tx, networkV
 //   });
 // }
 
-export const cancelEmergencyUnlockTx = createBetterTxFactory<{}>((tx, networkVariables, params) => {
+export const cancelEmergencyUnlockTx = createBetterTxFactory<{vault:string}>((tx, networkVariables, params) => {
     tx.moveCall({ 
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "cancel_emergency_unlock",
         arguments: [
-            tx.object(networkVariables.vault),
-            tx.object(networkVariables.clock),
+            tx.object(params.vault),
+            tx.object("0x8"),
         ],
     });
     return tx;
@@ -385,16 +412,17 @@ export const cancelEmergencyUnlockTx = createBetterTxFactory<{}>((tx, networkVar
 //   transfer::public_transfer(withdrawn_coin, recipient);
 // }
 
-export const executeEmergencyUnlockTx = createBetterTxFactory<{coin:string,recipient:string}>((tx, networkVariables, params) => {
+export const executeEmergencyUnlockTx = createBetterTxFactory<{recipient:string,vault:string,coin_type:string[]}>((tx, networkVariables, params) => {
     tx.moveCall({
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "execute_emergency_unlock",
         arguments: [
-            tx.object(networkVariables.vault),
-            tx.object(networkVariables.clock),
+            tx.object(params.vault),
+            tx.object("0x8"),
             tx.pure.address(params.recipient),
         ],
+        typeArguments:params.coin_type
     });
     return tx;
 }
@@ -423,14 +451,14 @@ export const executeEmergencyUnlockTx = createBetterTxFactory<{coin:string,recip
 //   });
 // }
 
-export const relockTx = createBetterTxFactory<{}>((tx, networkVariables, params) => {
+export const relockTx = createBetterTxFactory<{vault:string}>((tx, networkVariables, params) => {
     tx.moveCall({
-        package: networkVariables.package,
+        package: networkVariables.Package,
         module: "vault_host",
         function: "relock",
         arguments: [
-            tx.object(networkVariables.vault),
-            tx.object(networkVariables.clock),
+            tx.object(params.vault),
+            tx.object("0x8"),
         ],
     });
     return tx;
