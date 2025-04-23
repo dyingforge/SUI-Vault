@@ -13,7 +13,6 @@ use sui::table::{Self, Table};
 const ENotOwner: u64 = 1;
 const ENotVerifier: u64 = 2;
 // const EVerificationNotExpired: u64 = 3;
-const EIncorrectPassword: u64 = 4;
 const ENotFound: u64 = 5;
 const EVerificationNotActive: u64 = 6;
 const EVerificationExpired: u64 = 7;
@@ -41,6 +40,8 @@ public struct VerificationRequested has copy, drop {
     vault_id: ID,
     owner: address,
     verifier: address,
+    coin_type: TypeName,
+    cap: address,
     expire_epoch: u64,
 }
 
@@ -111,6 +112,7 @@ public struct Vault has key {
     // last_verification_epoch: u64,
     created_at: u64,
     status: u8,
+    cap: address,
     verification_expire_epoch: u64,
     last_operation_epoch: u64,
     recipient: address,
@@ -174,6 +176,8 @@ public entry fun create_vault(
     let owner = tx_context::sender(ctx);
 
     // 创建新保险箱
+    let cap_uid = object::new(ctx);
+    let cap_address = object::uid_to_address(&cap_uid);
     let vault_uid = object::new(ctx);
     let vault_id = object::uid_to_inner(&vault_uid);
     let vault_address = object::uid_to_address(&vault_uid);
@@ -193,6 +197,7 @@ public entry fun create_vault(
         emergency_unlock_time: 0,
         emergency_active: false,
         temp_unlock_expiry: 0,
+        cap: cap_address,
     };
 
     // 更新用户的保险箱列表
@@ -215,7 +220,7 @@ public entry fun create_vault(
 
     // 创建验证者凭证
     let verifier_cap = VerifierCap {
-        id: object::new(ctx),
+        id: cap_uid,
         vault_id: object::uid_to_inner(&vault.id),
         owner,
         verifier: verifier_address,
@@ -255,6 +260,7 @@ public entry fun verify_and_withdraw<T>(vault: &mut Vault, cap: &VerifierCap, ct
     // assert!(current_epoch > cap.last_verification_epoch, EVerificationNotExpired);
 
     // 7. 执行提取逻辑
+    assert!(vault.send_amount > 0, EInsufficientFunds);
     let type_name = type_name::get<T>();
     assert!(dynamic_field::exists_(&vault.id, type_name), ENotFound);
     vault.last_operation_epoch = current_epoch;
@@ -328,7 +334,7 @@ public entry fun request_verification<T>(
 
     let type_name = type_name::get<T>();
     assert!(dynamic_field::exists_(&vault.id, type_name), ENotFound);
-    let balance = dynamic_field::borrow_mut<TypeName, Balance<T>>(&mut vault.id, type_name);
+    let balance = dynamic_field::borrow<TypeName, Balance<T>>(&vault.id, type_name);
     let available = balance::value(balance);
     assert!(amount <= available, EInsufficientFunds);
 
@@ -348,6 +354,8 @@ public entry fun request_verification<T>(
         vault_id: object::uid_to_inner(&vault.id),
         owner: vault.owner,
         verifier: vault.verifier_address,
+        coin_type: type_name,
+        cap: vault.cap,
         expire_epoch: vault.verification_expire_epoch,
     });
 }
