@@ -1,3 +1,6 @@
+import { CoinMetadata } from "@mysten/sui/client"
+
+
 // public struct VaultCreated has copy, drop {
 //   vault_id: ID,
 //   owner: address,
@@ -58,6 +61,8 @@ export interface VerificationRequested {
     vault_id: string;
     owner: string;
     verifier: string;
+    coin_type: {name:string};
+    cap:string,
     expire_epoch: number;
 } 
 export interface CoinDeposited {
@@ -93,21 +98,21 @@ export interface VerificationCancelled {
 
 
 // public struct Vault has key {
-//   id: UID,
-//   name: String,
-//   password_hash: vector<u8>,
-//   owner: address,
-//   verifier_address: address,
-//   // last_verification_epoch: u64,
-//   status: u8,
-//   verification_expire_epoch: u64,
-//   last_operation_epoch: u64,
-//   recipient: address,
-//   emergency_unlock_time: u64,
-//   emergency_active: bool,
-//   send_amount: u64,
-//   temp_unlock_expiry: u64,
-//   //dynamic field
+//     id: UID,
+//     name: String,
+//     owner: address,
+//     verifier_address: address,
+//     // last_verification_epoch: u64,
+//     created_at: u64,
+//     status: u8,
+//     verification_expire_epoch: u64,
+//     last_operation_epoch: u64,
+//     recipient: address,
+//     emergency_unlock_time: u64,
+//     emergency_active: bool,
+//     send_amount: u64,
+//     temp_unlock_expiry: u64,
+//     //dynamic field
 // }
 
 // // 保险箱集合 - 存储所有保险箱
@@ -129,28 +134,77 @@ export interface VerificationCancelled {
 // }
 
 export interface Vault {
-    id: string;
+    id: {id:string};
     name: string;
-    password_hash: string[];
     owner: string;
     verifier_address: string;
+    created_at: number;
     status: number;
     verification_expire_epoch: number;
     last_operation_epoch: number;
+    cap:string;
     recipient: string;
     emergency_unlock_time: number;
     emergency_active: boolean;
     send_amount: number;
     temp_unlock_expiry: number;
 }
+
+export interface DispalyVault {
+    id: {id:string};
+    name:string;
+    status:number;
+    createdAt:string;
+    verifier:string;
+    balances: {
+        coin: string;
+        amount: string;
+    }[];
+    emergencyTimeRemaining: string;
+}
+
+export interface UserVault{
+    user_vaults: Vault[];
+    verifier_vaults: Vault[];
+    total_vaults: number;
+}
+
+
+export interface SuiTableData {
+    fields: {
+        id: {id:string};
+    };
+    type: string;
+}
+
+export interface SuiTableInfo {
+        id: {id:string};
+        name:string;
+        value:string[]
+    
+};
+
+export interface VaultData{
+    name:string;
+    value:number;
+}
+
+export interface SuiCoin  {
+    id: string,
+    type: string,
+    coinMetadata?: CoinMetadata,
+    balance?: number,
+  }
+
 export interface VaultPool {
-    id: string;
+    id: {id:string};
     vaults: string[];
-    user_vaults: Record<string, string[]>;
-    verifier_vaults: Record<string, string[]>;
+    user_vaults: SuiTableData;
+    verifier_vaults: SuiTableData;
     admin: string;
     total_vaults: number;
 }
+
 export interface VerifierCap {
     id: string;
     vault_id: string;
