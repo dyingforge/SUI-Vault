@@ -181,7 +181,6 @@ export interface SuiTableInfo {
         id: {id:string};
         name:string;
         value:string[]
-    
 };
 
 export interface VaultData{

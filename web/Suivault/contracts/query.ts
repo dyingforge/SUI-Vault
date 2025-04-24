@@ -95,91 +95,104 @@ export const queryVaultPool = async () => {
 }
 
 export const queryUserVault = async (address: string) => {
-  const vaultPool = await queryVaultPool();
-  const ownedVaultsTableAddress = vaultPool.user_vaults.fields.id.id;
-  const verifierVaultsTableAddress = vaultPool.verifier_vaults.fields.id.id;
+  try {
+    const vaultPool = await queryVaultPool();
+    const ownedVaultsTableAddress = vaultPool.user_vaults.fields.id.id;
+    const verifierVaultsTableAddress = vaultPool.verifier_vaults.fields.id.id;
 
-  const ownedVaultsContent = await suiClient.getDynamicFieldObject({
-    parentId: ownedVaultsTableAddress,
-    name: {
-      type: "address",
-      value: address,
-    },
-  });
-
-  const verifierVaultsContent = await suiClient.getDynamicFieldObject({
-    parentId: verifierVaultsTableAddress,
-    name: {
-      type: "address",
-      value: address,
-    },
-  });
-
-  if (!verifierVaultsContent.data?.content || !ownedVaultsContent.data?.content) {
-    throw new Error("vaults content not found");
-  }
-  if (!('fields' in ownedVaultsContent.data.content) || !('fields' in verifierVaultsContent.data.content)) {
-    throw new Error("Invalid profile data structure");
-  }
-  
-  let ownedVaultsInfo = ownedVaultsContent.data?.content.fields as unknown as SuiTableInfo;
-  let verifierVaultsInfo = verifierVaultsContent.data?.content.fields as unknown as SuiTableInfo;
-  console.log(ownedVaultsInfo.value, verifierVaultsInfo.value)
-
-  const ownedVaults = await Promise.all(ownedVaultsInfo.value.map(async (id) => {
-    const ownedContent =  await suiClient.getObject({
-      id: id,
-      options: {
-        showContent: true,
+    // 查询用户拥有的保险箱
+    const ownedVaultsContent = await suiClient.getDynamicFieldObject({
+      parentId: ownedVaultsTableAddress,
+      name: {
+        type: "address",
+        value: address,
       },
     });
 
-    if (!ownedContent.data?.content) {
-      throw new Error("Profile content not found");
-    }
+    // 查询用户作为验证者的保险箱
+    const verifierVaultsContent = await suiClient.getDynamicFieldObject({
+      parentId: verifierVaultsTableAddress,
+      name: {
+        type: "address",
+        value: address,
+      },
+    });
 
-    const parsedVault = ownedContent.data.content as SuiParsedData;
-    if (!('fields' in parsedVault)) {
-      throw new Error("Invalid profile data structure");
-    }
-    const ownedVault = parsedVault.fields as unknown as Vault;
-  
-    return ownedVault;
+    // 创建空的默认返回对象
+    const emptyVaults = {
+      user_vaults: [],
+      verifier_vaults: [],
+      total_vaults: vaultPool.total_vaults,
+    } as unknown as UserVault;
 
-  }));
-
-  const verifierVaults = await Promise.all(verifierVaultsInfo.value.map(async (id) =>{
-    const verifierContent = await suiClient.getObject({
-      id: id,
-      options: {
-        showContent: true,
-      }
-    })
+    // 检查是否有自己的保险箱数据
+    const hasOwnedVaults = ownedVaultsContent.data?.content && 'fields' in ownedVaultsContent.data.content;
     
-    if (!verifierContent.data?.content) {
-      throw new Error("Profile content not found");
+    // 检查是否有验证者保险箱数据
+    const hasVerifierVaults = verifierVaultsContent.data?.content && 'fields' in verifierVaultsContent.data.content;
+
+    // 如果两种保险箱都没有，直接返回空对象
+    if (!hasOwnedVaults && !hasVerifierVaults) {
+      console.log("用户没有任何保险箱");
+      return emptyVaults;
     }
 
-    const parsedVault = verifierContent.data.content as SuiParsedData;
-    if (!('fields' in parsedVault)) {
-      throw new Error("Invalid profile data structure");
+    // 处理自己的保险箱
+    let ownedVaults: Vault[] = [];
+    if (ownedVaultsContent.data?.content && 'fields' in ownedVaultsContent.data.content) {
+      let ownedVaultsInfo = ownedVaultsContent.data.content.fields as unknown as SuiTableInfo;
+      if (ownedVaultsInfo.value && ownedVaultsInfo.value.length > 0) {
+        ownedVaults = await Promise.all(ownedVaultsInfo.value.map(async (id) => {
+          const ownedContent = await suiClient.getObject({
+            id: id,
+            options: { showContent: true },
+          });
+
+          if (ownedContent.data?.content && 'fields' in ownedContent.data.content) {
+            return ownedContent.data.content.fields as unknown as Vault;
+          }
+          return null;
+        })).then(results => results.filter(Boolean) as Vault[]);
+      }
     }
-    const verifierVault = parsedVault.fields as unknown as Vault;
-  
-    return verifierVault;
-  }))
-  
-  console.log("owned",ownedVaults)
-  console.log("verifier",verifierVaults)
 
-  const vaults = {
-    user_vaults: ownedVaults,
-    verifier_vaults: [],
-    total_vaults: vaultPool.total_vaults,
-  } as unknown as UserVault;
+    // 处理验证者保险箱
+    let verifierVaults: Vault[] = [];
+    if (verifierVaultsContent.data?.content && 'fields' in verifierVaultsContent.data.content) {
+      let verifierVaultsInfo = verifierVaultsContent.data.content.fields as unknown as SuiTableInfo;
+      if (verifierVaultsInfo.value && verifierVaultsInfo.value.length > 0) {
+        verifierVaults = await Promise.all(verifierVaultsInfo.value.map(async (id) => {
+          const verifierContent = await suiClient.getObject({
+            id: id,
+            options: { showContent: true },
+          });
 
-  return vaults;
-}
+          if (verifierContent.data?.content && 'fields' in verifierContent.data.content) {
+            return verifierContent.data.content.fields as unknown as Vault;
+          }
+          return null;
+        })).then(results => results.filter(Boolean) as Vault[]);
+      }
+    }
+
+    console.log("处理后的保险箱数量 - 自己的:", ownedVaults.length, "验证者:", verifierVaults.length);
+
+    // 构建并返回结果
+    return {
+      user_vaults: ownedVaults,
+      verifier_vaults: verifierVaults,
+      total_vaults: vaultPool.total_vaults,
+    } as unknown as UserVault;
+  } catch (error) {
+    console.error("查询保险箱时出错:", error);
+    // 出错时也返回空对象
+    return {
+      user_vaults: [],
+      verifier_vaults: [],
+      total_vaults: 0,
+    } as unknown as UserVault;
+  }
+};
 
 export const queryRequestEvent = async() => {
   const requestEventContent = await suiClient.queryEvents({

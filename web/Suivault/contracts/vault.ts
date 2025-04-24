@@ -1,4 +1,4 @@
-import { createBetterTxFactory, networkConfig } from "./index";
+import { createBetterTxFactory, networkConfig, suiClient } from "./index";
 import {isValidSuiAddress} from "@mysten/sui/utils";
 
 // public entry fun create_vault(
@@ -458,7 +458,6 @@ export const relockTx = createBetterTxFactory<{vault:string}>((tx, networkVariab
         function: "relock",
         arguments: [
             tx.object(params.vault),
-            tx.object("0x8"),
         ],
     });
     return tx;

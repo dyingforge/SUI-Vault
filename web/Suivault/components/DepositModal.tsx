@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { getUserProfileCoin } from "@/contracts/query";
 import { SuiCoin } from "@/types/index";
 import { isValidSuiAddress } from "@mysten/sui/utils";
+import { Button } from "@/components/ui/button";
+import { ArrowRight, Wallet } from "lucide-react";
 
 interface DepositModalProps {
   isOpen: boolean;
@@ -19,6 +21,11 @@ export function DepositModal({ isOpen, onClose, onDeposit, userAddress }: Deposi
   const [selectedAsset, setSelectedAsset] = useState<SuiCoin | null>(null);
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
+
+  const formatAmount = (amount: string | number | undefined, decimals: number = 2): string => {
+    const value = typeof amount === 'string' ? parseFloat(amount) : amount;
+    return (value ? value / 1000000000 : 0).toFixed(decimals);
+  };
 
   useEffect(() => {
     const fetchUserAssets = async () => {
@@ -40,6 +47,7 @@ export function DepositModal({ isOpen, onClose, onDeposit, userAddress }: Deposi
     
     if (isOpen) {
       fetchUserAssets();
+      setAmount(''); // 重置金额
     }
   }, [isOpen, userAddress]);
 
@@ -47,6 +55,20 @@ export function DepositModal({ isOpen, onClose, onDeposit, userAddress }: Deposi
     if (!selectedAsset || !amount || parseFloat(amount) <= 0) return;
     onDeposit(selectedAsset, parseFloat(amount));
     onClose();
+  };
+  
+  // 添加最大金额按钮功能
+  const handleMaxAmount = () => {
+    if (selectedAsset) {
+      // 转换为UI显示单位
+      const maxValue = Number(selectedAsset.balance) / 1000000000;
+      setAmount(maxValue.toString());
+    }
+  };
+
+  // 获取代币符号
+  const getSymbol = (asset: SuiCoin) => {
+    return asset.coinMetadata?.symbol || asset.type.split('::').pop() || 'SUI';
   };
 
   return (
@@ -58,9 +80,10 @@ export function DepositModal({ isOpen, onClose, onDeposit, userAddress }: Deposi
       submitButtonText="存入"
       submitDisabled={!selectedAsset || !amount || parseFloat(amount) <= 0 || loading}
     >
-      <div className="space-y-4">
+      <div className="space-y-5">
+        {/* 资产选择区域 */}
         <div className="space-y-2">
-          <Label htmlFor="asset">选择资产</Label>
+          <Label htmlFor="asset" className="text-sm font-medium">选择资产</Label>
           <Select
             disabled={loading}
             value={selectedAsset?.type || ''}
@@ -69,36 +92,76 @@ export function DepositModal({ isOpen, onClose, onDeposit, userAddress }: Deposi
               if (asset) setSelectedAsset(asset);
             }}
           >
-            <SelectTrigger>
-              <SelectValue placeholder="选择资产" />
+            <SelectTrigger className="bg-white dark:bg-gray-800 border-2 focus:ring-blue-500 h-11">
+              <SelectValue placeholder="选择要存入的资产" />
             </SelectTrigger>
             <SelectContent>
-              {assets.map((asset) => (
-                <SelectItem key={asset.type} value={asset.type}>
-                  {asset.coinMetadata?.symbol || asset.type} ({asset.balance})
+              {assets.length > 0 ? assets.map((asset) => (
+                <SelectItem key={asset.type} value={asset.type} className="py-3">
+                  <div className="flex justify-between w-full items-center">
+                    <span className="font-medium">{getSymbol(asset)}</span>
+                    <span className="text-gray-500 text-sm">
+                      {formatAmount(asset.balance)} {getSymbol(asset)}
+                    </span>
+                  </div>
                 </SelectItem>
-              ))}
+              )) : (
+                <SelectItem value="loading" disabled className="text-center">
+                  {loading ? "加载中..." : "没有可用资产"}
+                </SelectItem>
+              )}
             </SelectContent>
           </Select>
         </div>
 
+        {/* 金额输入区域 */}
         <div className="space-y-2">
-          <div className="flex justify-between">
-            <Label htmlFor="amount">存入金额</Label>
+          <div className="flex justify-between items-center">
+            <Label htmlFor="amount" className="text-sm font-medium">存入金额</Label>
             {selectedAsset && (
-              <span className="text-xs text-gray-500">
-                余额: {selectedAsset.balance} {selectedAsset.coinMetadata?.symbol}
-              </span>
+              <div className="flex items-center text-sm text-gray-500">
+                <Wallet className="h-3.5 w-3.5 mr-1" />
+                <span>
+                  可用: <span className="font-medium">{formatAmount(selectedAsset.balance)}</span> {getSymbol(selectedAsset)}
+                </span>
+              </div>
             )}
           </div>
-          <Input
-            id="amount"
-            placeholder="输入金额"
-            type="number"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-          />
+          <div className="relative">
+            <Input
+              id="amount"
+              placeholder="0.00"
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="pr-20 h-11 text-lg font-medium bg-white dark:bg-gray-800 border-2 focus:ring-blue-500"
+            />
+            <div className="absolute inset-y-0 right-0 flex items-center">
+              <Button 
+                type="button" 
+                variant="ghost" 
+                className="h-full px-3 text-blue-600 hover:text-blue-800 hover:bg-blue-50 font-medium text-sm"
+                onClick={handleMaxAmount}
+                disabled={!selectedAsset}
+              >
+                MAX
+              </Button>
+            </div>
+          </div>
         </div>
+
+        {/* 预览区域 */}
+        {selectedAsset && amount && parseFloat(amount) > 0 && (
+          <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-gray-600 dark:text-gray-400">将存入保险箱</span>
+              <div className="flex items-center text-blue-700 dark:text-blue-400 font-medium">
+                {amount} {getSymbol(selectedAsset)}
+                <ArrowRight className="ml-1 h-4 w-4" />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </TransactionModal>
   );
